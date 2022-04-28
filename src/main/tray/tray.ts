@@ -3,7 +3,6 @@
  * Licensed under MIT License. See LICENSE in root directory for more information.
  */
 
-import path from "path";
 import packageInfo from "../../../package.json";
 import { Menu, Tray } from "electron";
 import type { IComputedValue } from "mobx";
@@ -12,7 +11,7 @@ import { showAbout } from "../menu/menu";
 import { checkForUpdates } from "../app-updater";
 import type { WindowManager } from "../window-manager";
 import logger from "../logger";
-import { isDevelopment, isWindows, productName, staticFilesDirectory } from "../../common/vars";
+import { isWindows, productName } from "../../common/vars";
 import { toJS } from "../../common/utils";
 import type { TrayMenuRegistration } from "./tray-menu-registration";
 
@@ -22,24 +21,15 @@ const TRAY_LOG_PREFIX = "[TRAY]";
 // note: instance of Tray should be saved somewhere, otherwise it disappears
 export let tray: Tray;
 
-export function getTrayIcon(): string {
-  return path.resolve(
-    staticFilesDirectory,
-    isDevelopment ? "../build/tray" : "icons", // copied within electron-builder extras
-    "trayIconTemplate.png",
-  );
-}
-
 export function initTray(
   windowManager: WindowManager,
   trayMenuItems: IComputedValue<TrayMenuRegistration[]>,
   navigateToPreferences: () => void,
   stopServicesAndExitApp: () => void,
   isAutoUpdateEnabled: () => boolean,
+  trayIconPath: string,
 ) {
-  const icon = getTrayIcon();
-
-  tray = new Tray(icon);
+  tray = new Tray(trayIconPath);
   tray.setToolTip(packageInfo.description);
   tray.setIgnoreDoubleClickEvents(true);
 
