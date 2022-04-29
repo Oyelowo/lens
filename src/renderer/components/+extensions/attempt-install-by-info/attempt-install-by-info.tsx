@@ -2,17 +2,20 @@
  * Copyright (c) OpenLens Authors. All rights reserved.
  * Licensed under MIT License. See LICENSE in root directory for more information.
  */
-import type { ExtendableDisposer } from "../../../../common/utils";
+import { isString, isObject } from "../../../../common/utils";
 import { Notifications } from "../../notifications";
 import { ConfirmDialog } from "../../confirm-dialog";
 import React from "react";
 import path from "path";
 import { SemVer } from "semver";
 import URLParse from "url-parse";
-import type { InstallRequest } from "../attempt-install/install-request";
 import lodash from "lodash";
 import type { ExtensionInstallationStateStore } from "../../../../extensions/extension-installation-state-store/extension-installation-state-store";
-import type { Fetch } from "../../../../common/fetch/fetch.injectable";
+import type { DownloadJson } from "../../../../common/fetch/download-json.injectable";
+import type { JsonValue } from "type-fest";
+import type { DownloadBinary } from "../../../../common/fetch/download-binary.injectable";
+import { withTimeout } from "../../../../common/fetch/timeout-controller";
+import type { AttemptInstall } from "../attempt-install/attempt-install.injectable";
 
 export interface ExtensionInfo {
   name: string;
@@ -21,116 +24,154 @@ export interface ExtensionInfo {
 }
 
 interface Dependencies {
-  attemptInstall: (request: InstallRequest, d: ExtendableDisposer) => Promise<void>;
+  attemptInstall: AttemptInstall;
   getBaseRegistryUrl: () => Promise<string>;
   extensionInstallationStateStore: ExtensionInstallationStateStore;
-  fetch: Fetch;
+  downloadJson: DownloadJson;
+  downloadBinary: DownloadBinary;
 }
+
+export type AttemptInstallByInfo = (info: ExtensionInfo) => Promise<void>;
 
 export const attemptInstallByInfo = ({
   attemptInstall,
   getBaseRegistryUrl,
   extensionInstallationStateStore,
-  fetch,
-}: Dependencies) => async ({
-  name,
-  version,
-  requireConfirmation = false,
-}: ExtensionInfo) => {
-  const disposer = extensionInstallationStateStore.startPreInstall();
-  const baseUrl = await getBaseRegistryUrl();
-  const registryUrl = new URLParse(baseUrl).set("pathname", name).toString();
-  let json;
+  downloadJson,
+  downloadBinary,
+}: Dependencies): AttemptInstallByInfo => (
+  async (info) => {
+    const { name, version: versionOrTagName, requireConfirmation = false } = info;
+    const disposer = extensionInstallationStateStore.startPreInstall();
+    const baseUrl = await getBaseRegistryUrl();
+    const registryUrl = new URLParse(baseUrl).set("pathname", name).toString();
+    let json: JsonValue;
 
-  try {
-    const request = await fetch(registryUrl);
+    try {
+      const result = await downloadJson(registryUrl);
 
-    if (request.status < 200 || 300 <= request.status) {
-      Notifications.error(`Failed to get registry information for that extension: ${request.statusText}`);
-
-      return disposer();
-    }
-
-    json = await request.json();
-
-    if (!json || json.error || typeof json.versions !== "object" || !json.versions) {
-      const message = json?.error ? `: ${json.error}` : "";
-
-      Notifications.error(`Failed to get registry information for that extension${message}`);
-
-      return disposer();
-    }
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      // assume invalid JSON
-      console.warn("Set registry has invalid json", { url: baseUrl }, error);
-      Notifications.error("Failed to get valid registry information for that extension. Registry did not return valid JSON");
-    } else {
-      console.error("Failed to download registry information", error);
-      Notifications.error(`Failed to get valid registry information for that extension. ${error}`);
-    }
-
-    return disposer();
-  }
-
-  if (version) {
-    if (!json.versions[version]) {
-      if (json["dist-tags"][version]) {
-        version = json["dist-tags"][version];
-      } else {
-        Notifications.error(
-          <p>
-            The <em>{name}</em> extension does not have a version or tag{" "}
-            <code>{version}</code>.
-          </p>,
-        );
+      if (result.status === "error") {
+        Notifications.error(`Failed to get registry information for that extension: ${result.message}`);
 
         return disposer();
       }
-    }
-  } else {
-    const versions = Object.keys(json.versions)
-      .map(
-        version =>
-          new SemVer(version, { loose: true, includePrerelease: true }),
-      )
-      // ignore pre-releases for auto picking the version
-      .filter(version => version.prerelease.length === 0);
 
-    version = lodash.reduce(versions, (prev, curr) =>
-      prev.compareMain(curr) === -1 ? curr : prev,
-    ).format();
-  }
+      json = result.data;
 
-  if (requireConfirmation) {
-    const proceed = await ConfirmDialog.confirm({
-      message: (
-        <p>
-          Are you sure you want to install{" "}
-          <b>
-            {name}@{version}
-          </b>
-          ?
-        </p>
-      ),
-      labelCancel: "Cancel",
-      labelOk: "Install",
-    });
+      if (!isObject(json)) {
+        Notifications.error("Failed to get registry information for that extension");
 
-    if (!proceed) {
+        return disposer();
+      }
+
+      if (json.error || !isObject(json.versions)) {
+        const message = json.error ? `: ${json.error}` : "";
+
+        Notifications.error(`Failed to get registry information for that extension${message}`);
+
+        return disposer();
+      }
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+      // assume invalid JSON
+        console.warn("Set registry has invalid json", { url: baseUrl }, error);
+        Notifications.error("Failed to get valid registry information for that extension. Registry did not return valid JSON");
+      } else {
+        console.error("Failed to download registry information", error);
+        Notifications.error(`Failed to get valid registry information for that extension. ${error}`);
+      }
+
       return disposer();
     }
+
+    let version = versionOrTagName;
+
+    if (versionOrTagName) {
+      validDistTagName: if (!json.versions[versionOrTagName]) {
+        const distTags = json["dist-tags"];
+
+        if (isObject(distTags)) {
+          const potentialVersion = distTags[versionOrTagName];
+
+          if (isString(potentialVersion)) {
+            if (!json.versions[potentialVersion]) {
+              Notifications.error((
+                <p>
+                Configured registry claims to have tag <code>{versionOrTagName}</code>.{" "}
+                But does not have version infomation for the reference.
+                </p>
+              ));
+
+              return disposer();
+            }
+
+            version = potentialVersion;
+            break validDistTagName;
+          }
+        }
+
+        Notifications.error((
+          <p>
+          The <em>{name}</em> extension does not have a version or tag <code>{versionOrTagName}</code>.
+          </p>
+        ));
+
+        return disposer();
+      }
+    } else {
+      const versions = Object.keys(json.versions)
+        .map(
+          version =>
+            new SemVer(version, { loose: true, includePrerelease: true }),
+        )
+      // ignore pre-releases for auto picking the version
+        .filter(version => version.prerelease.length === 0);
+
+      version = lodash.reduce(versions, (prev, curr) =>
+        prev.compareMain(curr) === -1 ? curr : prev,
+      ).format();
+    }
+
+    const versionInfo = json.versions[version];
+    const tarballUrl = isObject(versionInfo) && isObject(versionInfo.dist) && versionInfo.dist.tarball;
+
+    if (!isString(tarballUrl)) {
+      Notifications.error("Configured registry has invalid data model. Please verify that it is like NPM's.");
+      console.warn(`[ATTEMPT-INSTALL-BY-INFO]: registry returned unexpected data, final version is ${version} but the versions object is missing .dist.tarball as a string`, versionInfo);
+
+      return disposer();
+    }
+
+    if (requireConfirmation) {
+      const proceed = await ConfirmDialog.confirm({
+        message: (
+          <p>
+          Are you sure you want to install{" "}
+            <b>
+              {name}@{version}
+            </b>
+          ?
+          </p>
+        ),
+        labelCancel: "Cancel",
+        labelOk: "Install",
+      });
+
+      if (!proceed) {
+        return disposer();
+      }
+    }
+
+    const fileName = path.basename(tarballUrl);
+    const { signal } = withTimeout(10 * 60 * 1000);
+    const request = await downloadBinary(tarballUrl, { signal });
+
+    if (request.status === "error") {
+      Notifications.error(`Failed to download extension: ${request.message}`);
+
+      return disposer();
+    }
+
+    return attemptInstall({ fileName, data: request.data }, disposer);
   }
-
-  const url = json.versions[version].dist.tarball;
-  const fileName = path.basename(url);
-  const request = await fetch(url, { timeout: 10 * 60 * 1000 });
-
-  if (request.status < 200 || 300 <= request.status) {
-    Notifications.error(`Failed to download extension: ${request.statusText}`);
-
-    return disposer();
-  }
-
-  return attemptInstall({ fileName, dataP: request.buffer() }, disposer);
-};
+);

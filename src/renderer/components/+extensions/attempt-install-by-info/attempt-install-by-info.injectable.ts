@@ -7,18 +7,19 @@ import { attemptInstallByInfo } from "./attempt-install-by-info";
 import attemptInstallInjectable from "../attempt-install/attempt-install.injectable";
 import getBaseRegistryUrlInjectable from "../get-base-registry-url/get-base-registry-url.injectable";
 import extensionInstallationStateStoreInjectable from "../../../../extensions/extension-installation-state-store/extension-installation-state-store.injectable";
-import fetchInjectable from "../../../../common/fetch/fetch.injectable";
+import downloadJsonInjectable from "../../../../common/fetch/download-json.injectable";
+import downloadBinaryInjectable from "../../../../common/fetch/download-binary.injectable";
 
 const attemptInstallByInfoInjectable = getInjectable({
   id: "attempt-install-by-info",
 
-  instantiate: (di) =>
-    attemptInstallByInfo({
-      attemptInstall: di.inject(attemptInstallInjectable),
-      getBaseRegistryUrl: di.inject(getBaseRegistryUrlInjectable),
-      extensionInstallationStateStore: di.inject(extensionInstallationStateStoreInjectable),
-      fetch: di.inject(fetchInjectable),
-    }),
+  instantiate: (di) => attemptInstallByInfo({
+    attemptInstall: di.inject(attemptInstallInjectable),
+    getBaseRegistryUrl: di.inject(getBaseRegistryUrlInjectable),
+    extensionInstallationStateStore: di.inject(extensionInstallationStateStoreInjectable),
+    downloadJson: di.inject(downloadJsonInjectable),
+    downloadBinary: di.inject(downloadBinaryInjectable),
+  }),
 });
 
 export default attemptInstallByInfoInjectable;
