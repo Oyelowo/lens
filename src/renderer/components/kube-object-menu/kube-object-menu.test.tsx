@@ -170,10 +170,6 @@ describe("kube-object-menu", () => {
         userEvent.click(menuItem);
       });
 
-      it("renders", () => {
-        expect(baseElement).toMatchSnapshot();
-      });
-
       it("opens a confirmation dialog", () => {
         screen.getByTestId("confirmation-dialog");
       });
